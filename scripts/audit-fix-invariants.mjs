@@ -219,6 +219,24 @@ const INVARIANTS = [
     regex: /try\s*\{[\s\S]{0,200}agent\.executeTask\(task\)/,
     why: 'executeTask wraps agent.executeTask in try/catch so a thrown error becomes a structured TaskResult{status:"failed", error} instead of crashing the swarm.',
   },
+
+  // ADR-120 Step 2 — midstream-aware federation loader prefers
+  // midstreamer's real QUIC build when MIDSTREAMER_QUIC_NATIVE=1,
+  // falls back to agentic-flow's loader otherwise. Without this
+  // invariant, a refactor could silently re-introduce the bare
+  // loadQuicTransport import that bypasses the midstream preference.
+  {
+    issue: 'ADR-120',
+    file: 'v3/@claude-flow/plugin-agent-federation/src/transport/midstream-aware-loader.ts',
+    substring: 'MIDSTREAMER_QUIC_NATIVE',
+    why: 'midstream-aware loader probes MIDSTREAMER_QUIC_NATIVE first; without this env flag check, the federation transport silently stays on agentic-flow even after midstream@0.3.0 ships real QUIC.',
+  },
+  {
+    issue: 'ADR-120',
+    file: 'v3/@claude-flow/plugin-agent-federation/src/plugin.ts',
+    substring: 'loadFederationTransport',
+    why: 'plugin.ts dispatches through the midstream-aware loader. Reverting to the bare loadQuicTransport import bypasses the ADR-120 preference layer entirely.',
+  },
 ];
 
 const offenders = [];

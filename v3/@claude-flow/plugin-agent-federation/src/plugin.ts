@@ -30,18 +30,24 @@ import { TrustLevel, getTrustLevelLabel } from './domain/entities/trust-level.js
 import { type FederationMessageType } from './domain/entities/federation-envelope.js';
 
 // ADR-104: real wire transport via agentic-flow loader pattern.
-// Today this resolves to WebSocketFallbackTransport (real ws networking);
-// when ruvnet/agentic-flow ships a native QUIC binding the same import
-// auto-upgrades with no plugin changes (set AGENTIC_FLOW_QUIC_NATIVE=1).
-type LoadedTransport = Awaited<ReturnType<typeof loadQuicTransport>> & {
+// ADR-120: midstream-aware loader wraps the agentic-flow loader so
+// when `midstreamer` (ruvnet/midstream) ships its production QUIC
+// build (Step 1 of ADR-120) and operators opt in with
+// MIDSTREAMER_QUIC_NATIVE=1, the federation transport auto-upgrades.
+// Until then, the wrapper transparently defers to the agentic-flow
+// loader — which itself resolves to WebSocketFallbackTransport
+// today, or native QUIC when AGENTIC_FLOW_QUIC_NATIVE=1.
+import {
+  loadFederationTransport,
+  type AgentMessage,
+  type AgentTransport,
+} from './transport/midstream-aware-loader.js';
+
+type LoadedTransport = AgentTransport & {
   /** WebSocketFallbackTransport adds listen(); the loader's interface
    * doesn't include it, so we cast at the call site. */
   listen?: (port: number, host?: string) => Promise<void>;
 };
-import {
-  loadQuicTransport,
-  type AgentMessage,
-} from 'agentic-flow/transport/loader';
 import { dispatchInbound, canonicalizeEnvelopeForVerify } from './application/inbound-dispatcher.js';
 import { createMcpTools } from './mcp-tools.js';
 import { createCliCommands } from './cli-commands.js';
@@ -216,20 +222,28 @@ export class AgentFederationPlugin implements ClaudeFlowPlugin {
 
     const sessions: Map<string, import('./domain/entities/federation-session.js').FederationSession> = new Map();
 
-    // ADR-104: load wire transport. WebSocket fallback by default; native
-    // QUIC when AGENTIC_FLOW_QUIC_NATIVE=1 + binding installed. Failures
-    // here downgrade to in-process noop (logged), preserving backward
-    // compat for tests/environments without ws available.
+    // ADR-104 + ADR-120: load wire transport. WebSocket fallback by
+    // default; native QUIC when AGENTIC_FLOW_QUIC_NATIVE=1 (ADR-108) or
+    // MIDSTREAMER_QUIC_NATIVE=1 (ADR-120 Step 1, when midstream@0.3.0
+    // ships its real QUIC build). The midstream-aware loader picks the
+    // best available transport transparently. Failures downgrade to
+    // in-process noop (logged), preserving backward compat for
+    // tests/environments without ws available.
     let transport: LoadedTransport | null = null;
     try {
-      transport = await loadQuicTransport({
+      const loaded = await loadFederationTransport({
         serverName: nodeId,
         maxIdleTimeoutMs: 30_000,
         maxConcurrentStreams: 100,
         enable0Rtt: true,
-      }) as LoadedTransport;
+      });
+      transport = loaded.transport as LoadedTransport;
       this.transport = transport;
-      context.logger.info(`Federation transport loaded: ${nodeId}`);
+      context.logger.info(
+        `Federation transport loaded: ${nodeId} (source=${loaded.source}${
+          loaded.fallbackReason ? `, note=${loaded.fallbackReason}` : ''
+        })`,
+      );
     } catch (err) {
       context.logger.warn(
         `Federation transport unavailable (${err instanceof Error ? err.message : err}); ` +
