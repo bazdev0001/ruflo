@@ -1,10 +1,32 @@
-# ADR-122 — `@claude-flow/browser` beyond-SOTA: signed trajectories, causal self-healing, federated MCTS
+# ADR-122 — RuFlo Browser Substrate: signed trajectories, causal self-healing, federated MCTS, session capsules
 
-**Status**: Proposed (2026-05-18)
+**Status**: Proposed (2026-05-18) — revised 2026-05-18 to reframe as substrate
 **Date**: 2026-05-18
 **Authors**: claude (drafted with rUv)
-**Related**: `@claude-flow/browser@3.0.0-alpha.3`, [`agent-browser@0.27.0`](https://www.npmjs.com/package/agent-browser), `ruflo-browser` plugin (record/replay/auth-flow/cookie-vault), [`@ruvector/rvf@0.2.1`](https://www.npmjs.com/package/@ruvector/rvf), AgentDB causal graph (ADR-076 family), Ed25519 witness manifest (ADR-103), Federation v1 (ADR-097/104/105–110), AIDefence 2.3.0 (ADR-118)
+**Related**: `@claude-flow/browser@3.0.0-alpha.3`, [`agent-browser@0.27.0`](https://www.npmjs.com/package/agent-browser), `ruflo-browser` plugin (record/replay/auth-flow/cookie-vault), [`@ruvector/rvf@0.2.1`](https://www.npmjs.com/package/@ruvector/rvf), AgentDB causal graph (ADR-076 family), Ed25519 witness manifest (ADR-103), Federation v1 (ADR-097/104/105–110), AIDefence 2.3.0 (ADR-118), [Reflective MCTS for web agents (arXiv 2410.02052)](https://arxiv.org/abs/2410.02052), [OWASP Session Management Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html), [Browserbase Stagehand](https://www.browserbase.com/blog/browser-automation-all-languages-with-stagehand/)
 **Supersedes**: nothing (additive)
+
+## Core thesis (revised)
+
+**RuFlo is not a browser agent. RuFlo is the memory, policy, replay, and distributed-planning substrate underneath browser agents.**
+
+Stagehand, Browser Use, Surfer-H, Playwright, Chrome, Browserbase, local browsers, and cloud browser pools become **execution targets**. RuFlo owns: memory, auth state, planning, replay, scoring, policy, learning, and cross-installation coordination.
+
+The public stack today is:
+
+```
+agent → browser → action → observation → next action
+```
+
+RuFlo should be:
+
+```
+agent → governed Session Capsule → distributed MCTS search →
+  Browser Execution Adapter → replay verification → RuVector memory →
+  Workflow Compiler → reusable RuFlo primitive
+```
+
+That is the architectural jump and the defensible SOTA claim.
 
 ## Context
 
@@ -47,9 +69,92 @@ This ADR converges the two ruflo browser systems and commits to three wedges tha
 
 The bolded rows are the wedges: every named SOTA system is "N", ruflo has the primitives in place to be "Y", and nothing else can ship these without rebuilding their core.
 
+## Architecture (substrate)
+
+### Layered system
+
+1. **Browser Execution Adapters** — Playwright, Stagehand, Browser Use, Browserbase, local Chrome profile, remote browser pool, future Surfer-H visual adapter. Single interface; RuFlo stays above the tool wars.
+2. **Session Capsule Layer** — sealed browser-state bundles with origin policy, consent proof, expiry, reuse policy, and witness chain. Cookies, localStorage, sessionStorage, IndexedDB metadata, browser fingerprint profile — never raw reusable blobs.
+3. **Distributed MCTS Layer** — risk/cost/auth-aware UCT search distributed across federation peers. Reflective MCTS extended to persist across runs and installations.
+4. **Cross-Installation Search Fabric** — Explorer / Verifier / Critic / Recorder / Learner / Coordinator node roles. CRDT or append-only event-log merge of search-tree deltas. **Search deltas shared by default; raw secrets never.**
+5. **RuVector Memory** — DOM/screenshot/task embeddings, site-flow graphs, selector-reliability vectors, MCTS node summaries. The recall path that gates the cost of a fresh exploration.
+6. **Workflow Compiler** — successful MCTS traces become deterministic workflows with selector fallback graphs, test harnesses, policy manifests, and ADR traces.
+7. **Policy & Risk Layer** — risk-class taxonomy gates autonomous action. Only read-only / authenticated-read / draft-write run autonomously by default.
+
+### Runtime services
+
+| Service | Responsibility |
+|---|---|
+| `ruflo-sessiond` | Capture / seal / refresh / rotate / revoke Session Capsules. Mount into browser context. Audit reuse. |
+| `ruflo-browexec` | Adapter dispatch. Launch browser via chosen adapter; apply capsule; execute action; emit trace event. |
+| `ruflo-mcts` | Distributed tree search engine. Select / expand / simulate / score / backprop / publish delta. |
+| `ruflo-replayd` | Replay successful runs; verify; generalize selectors; produce fallback paths; create workflow artifact. |
+| `ruflo-critic` | Policy + risk evaluation. Detects irreversible actions; scores auth/site risk; enforces consent; blocks unsafe transitions. |
+| `ruflo-memory` | RuVector-backed embeddings + similarity retrieval; failure clustering; reusable-path ranking. |
+
+### Risk classes (autonomous-action gate)
+
+| Class | Description | Autonomous? |
+|---|---|---|
+| 1 | Read-only | ✅ |
+| 2 | Authenticated read | ✅ |
+| 3 | Draft write | ✅ |
+| 4 | External submission | ❌ human approval |
+| 5 | Financial action | ❌ human approval |
+| 6 | Account mutation | ❌ human approval |
+| 7 | Destructive | ❌ human approval |
+
+### Session Capsule schema
+
+```rust
+pub struct SessionCapsule {
+    pub capsule_id: CapsuleId,
+    pub tenant_id: TenantId,
+    pub owner_id: OwnerId,
+    pub origins: Vec<OriginPolicy>,
+    pub browser_profile: BrowserProfile,
+    pub encrypted_state_ref: StateRef,
+    pub created_at: Timestamp,
+    pub expires_at: Timestamp,
+    pub reuse_policy: ReusePolicy,
+    pub consent_proof: ConsentProof,
+    pub witness_chain_head: Hash256,
+}
+pub struct ReusePolicy {
+    pub allowed_origins: Vec<String>,
+    pub allowed_tasks: Vec<TaskClass>,
+    pub max_replays: u32,
+    pub require_fresh_mfa: bool,
+    pub allow_cross_device: bool,
+    pub allow_cross_installation: bool,
+}
+```
+
+The Phase 3 attested cookie vault is the **subset** of this — extended in Phase 6 to full SessionCapsule with multi-store state, browser fingerprint, and ReusePolicy.
+
+### Production-aware UCT scoring
+
+```
+score = Q + C·√(ln(parent_visits) / child_visits) + R − λ·risk − μ·cost − α·auth
+```
+
+Where `Q` = task value, `R` = replay bonus, `λ·risk` = irreversible-action penalty, `μ·cost` = token + browser-runtime cost, `α·auth` = session-fragility penalty. Phase 4's UCB1 implementation is extended in Phase 6 to use this production-aware formula.
+
+### SOTA scoring rubric
+
+| Dimension | Target |
+|---|---|
+| Completion rate | > 85% |
+| Replay success | > 90% on stable sites |
+| Auth reuse success | > 95% within allowed expiry |
+| Human intervention rate | < 10% (read-only tasks) |
+| Token reduction from memory | > 30% |
+| Unsafe action escape rate | 0% |
+| Trace completeness | 100% for privileged actions |
+
 ## Decision
 
-Land beyond-SOTA in **six phases**, each shippable alone, each opt-in via configuration. Phases 0–2 are convergence (fix what's broken / merge what's split); phases 3–5 are the new wedges.
+Land the substrate in **eight phases**, each shippable alone, each opt-in via configuration. Phases 0–2 are convergence; phases 3–5 are the original beyond-SOTA wedges; phases 6–7 are the substrate framing.
 
 ### Phase 0 — Upgrade `agent-browser` 0.6 → 0.27 and converge the two systems
 
@@ -142,16 +247,38 @@ Compose with existing ruflo primitives — no new architecture:
 
 **Non-goals (Phase 5):** retraining a model for routing; reuse the existing intelligence pipeline.
 
+### Phase 6 — Substrate primitives: Session Capsule + adapter abstraction + risk classes
+
+Extend Phase 3's cookie vault into the full **SessionCapsule** model (origins[], browser-profile, encrypted-state-ref, reuse-policy, consent-proof, witness-chain-head). Expose a single `BrowserExecutionAdapter` interface that wraps the existing AgentBrowserAdapter and adds shim adapters for Playwright/Stagehand/Browserbase/local Chrome. Add a `RiskClassifier` that maps planned actions to the 7-class risk taxonomy and gates autonomous execution.
+
+**Acceptance:**
+- Login-once / reuse-many round-trip works across two installations (same project key) with policy enforcement
+- `BrowserExecutionAdapter.execute()` dispatches to ≥2 backends (agent-browser + one of Playwright/Stagehand) with byte-identical observation shape
+- Risk-class-4-and-above actions block on `approval_required` events
+- `ConsentProof` is signed + verifiable; revoke flow invalidates downstream replays
+
+### Phase 7 — Workflow Compiler + production-aware UCT
+
+Compile winning MCTS traces (Phase 4) into deterministic YAML workflows with selector fallback graphs and policy manifests. Extend Phase 4's UCB1 to use the production-aware formula (Q + C·√(ln(N)/n) + R − λ·risk − μ·cost − α·auth). Add the Recorder/Learner node roles for cross-installation workflow exchange.
+
+**Acceptance:**
+- A successful MCTS trace compiles to a YAML workflow with ≥1 selector fallback per step
+- Replaying the compiled workflow on a fresh installation succeeds end-to-end (without re-exploration)
+- Production-aware UCT scores correlate with measured replay-success on a held-out benchmark
+- ≥30% token reduction on a second run of a previously-solved task (rubric row 5)
+
 ## Phase summary
 
 | Phase | Wedge | Composed primitives | Ships as |
 |---|---|---|---|
-| 0 | Convergence + upgrade | `agent-browser@0.27`, fold plugin into package | alpha.4 |
-| 1 | Signed trajectories | RVF + witness + replay-with-mutation | alpha.5 |
-| 2 | Causal self-healing | AgentDB causal edges + adapter retry hook | alpha.6 |
-| 3 | Attested cookie vault | AIDefence + RVF + witness | alpha.7 |
-| 4 | Federated MCTS | Federation v1 + HNSW + ReasoningBank | alpha.8 |
-| 5 | Cost-aware routing + GOAP | hooks_route + ruflo-goals + cost-tracker | alpha.9 |
+| 0 | Convergence + upgrade | `agent-browser@0.27`, fold plugin into package | alpha.4 ✅ |
+| 1 | Signed trajectories | RVF + witness + replay-with-mutation | alpha.5 ✅ |
+| 2 | Causal self-healing | AgentDB causal edges + adapter retry hook | alpha.6 ✅ |
+| 3 | Attested cookie vault | AIDefence + RVF + witness | alpha.7 ✅ |
+| 4 | Federated MCTS | Federation v1 + HNSW + ReasoningBank | alpha.8 ✅ |
+| 5 | Cost-aware routing + GOAP | hooks_route + ruflo-goals + cost-tracker | alpha.9 ✅ |
+| 6 | Session Capsule + adapters + risk classes | Capsule schema + BrowserExecutionAdapter + RiskClassifier | alpha.10 🚧 |
+| 7 | Workflow Compiler + production-aware UCT | YAML workflows + selector fallback graphs + UCT extension | alpha.11 ⏳ |
 
 ## Open questions
 

@@ -166,6 +166,46 @@ export {
   type RecoveryExplanation,
 } from './domain/causal-recovery.js';
 
+// Session Capsule + Risk Classifier + Browser Execution Adapter (ADR-122 Phase 6 — substrate)
+export {
+  SessionCapsuleService,
+  RiskClassifier,
+  type CreateCapsuleInput,
+} from './application/session-capsule-service.js';
+export {
+  CAPSULE_ENVELOPE_VERSION,
+  CAPSULE_ENVELOPE_KIND,
+  SessionCapsuleEnvelopeSchema,
+  SessionCapsulePayloadSchema,
+  ReusePolicySchema,
+  OriginPolicySchema,
+  ConsentProofSchema,
+  BrowserProfileSchema,
+  StateRefSchema,
+  InlineStateSchema,
+  RiskClassSchema,
+  AUTONOMOUS_CLASSES,
+  type SessionCapsuleEnvelope,
+  type SessionCapsulePayload,
+  type ReusePolicy,
+  type OriginPolicy,
+  type ConsentProof,
+  type BrowserProfile,
+  type StateRef,
+  type InlineState,
+  type RiskClass,
+  type RiskClassification,
+  type CapsuleVerificationResult,
+} from './domain/session-capsule.js';
+export {
+  AgentBrowserExecutionAdapter,
+} from './infrastructure/agent-browser-execution-adapter.js';
+export type {
+  BrowserExecutionAdapter,
+  Observation,
+  AdapterBackend,
+} from './domain/browser-adapter.js';
+
 // Cost-aware action routing + GOAP preflight (ADR-122 Phase 5)
 export {
   ActionRouter,
